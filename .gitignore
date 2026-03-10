@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# PDF & training materials
+*.pdf
+
+# Superseded by docker-compose.yml
+docker-compose-kafka.yml
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-error.log
+
+# NestJS build output
+dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

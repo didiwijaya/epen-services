@@ -1,0 +1,855 @@
+openapi: 3.0.3
+info:
+  title: Master Data Service
+  description: |
+    Service pengelola seluruh data referensi/master yang digunakan lintas modul
+    E-Penatausahaan 2026. Menjadi single source of truth untuk data rekanan,
+    rekening, organisasi, dan kode referensi lainnya.
+  version: 1.0.0
+  contact:
+    name: Tim E-Penatausahaan
+    email: dev@jatengprov.go.id
+
+servers:
+  - url: https://master-data.epn.jatengprov.go.id/api/v1
+    description: Production
+  - url: https://dev-master-data.epn.jatengprov.go.id/api/v1
+    description: Development
+  - url: http://localhost:8001/api/v1
+    description: Local
+
+tags:
+  - name: Rekanan
+    description: Manajemen data vendor / rekanan
+  - name: Rekening
+    description: Manajemen rekening penerima dan rekening gaji
+  - name: Virtual Account
+    description: Manajemen virtual account per SKPD
+  - name: Organisasi
+    description: Struktur organisasi (Bidang, SKPD, Unit Kerja)
+  - name: Dropdown
+    description: Data referensi untuk keperluan dropdown / lookup
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # REKANAN
+  # ─────────────────────────────────────────────
+
+  /rekanan:
+    get:
+      tags: [Rekanan]
+      summary: Daftar rekanan
+      description: Mengambil daftar rekanan dengan filter dan pagination.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: search
+          in: query
+          description: Cari berdasarkan nama atau NPWP
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [aktif, nonaktif]
+        - name: kode_usaha
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Daftar rekanan berhasil diambil
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Rekanan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Rekanan]
+      summary: Tambah rekanan baru
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RekananRequest'
+      responses:
+        '201':
+          description: Rekanan berhasil ditambahkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /rekanan/lookup:
+    get:
+      tags: [Rekanan]
+      summary: Lookup rekanan by NPWP atau nama
+      description: Endpoint cepat untuk lookup saat input transaksi. Response di-cache Redis.
+      parameters:
+        - name: npwp
+          in: query
+          schema:
+            type: string
+            example: "01.234.567.8-901.000"
+        - name: nama
+          in: query
+          schema:
+            type: string
+        - name: kode_swift
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Data rekanan ditemukan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RekananLookup'
+
+  /rekanan/{id}:
+    get:
+      tags: [Rekanan]
+      summary: Detail rekanan
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail rekanan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Rekanan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Rekanan]
+      summary: Update data rekanan
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RekananRequest'
+      responses:
+        '200':
+          description: Rekanan berhasil diupdate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Rekanan]
+      summary: Nonaktifkan rekanan
+      description: Soft delete — status berubah menjadi nonaktif, data tidak dihapus.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Rekanan berhasil dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+
+  # ─────────────────────────────────────────────
+  # REKENING PENERIMA
+  # ─────────────────────────────────────────────
+
+  /rekening-penerima:
+    get:
+      tags: [Rekening]
+      summary: Daftar rekening penerima
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: rekanan_id
+          in: query
+          schema:
+            type: integer
+        - name: bank
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Daftar rekening penerima
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RekeningPenerima'
+
+    post:
+      tags: [Rekening]
+      summary: Tambah rekening penerima
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RekeningPenerimaRequest'
+      responses:
+        '201':
+          description: Rekening penerima berhasil ditambahkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  /rekening-penerima/{id}:
+    get:
+      tags: [Rekening]
+      summary: Detail rekening penerima
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail rekening penerima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+    put:
+      tags: [Rekening]
+      summary: Update rekening penerima
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RekeningPenerimaRequest'
+      responses:
+        '200':
+          description: Rekening penerima berhasil diupdate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  /rekening-gaji:
+    get:
+      tags: [Rekening]
+      summary: Daftar rekening gaji pegawai
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: nip
+          in: query
+          schema:
+            type: string
+        - name: nama
+          in: query
+          schema:
+            type: string
+        - name: bank
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Daftar rekening gaji
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/RekeningGaji'
+
+  /rekening-gaji/{id}:
+    get:
+      tags: [Rekening]
+      summary: Detail rekening gaji
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail rekening gaji
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  # ─────────────────────────────────────────────
+  # VIRTUAL ACCOUNT
+  # ─────────────────────────────────────────────
+
+  /virtual-account:
+    get:
+      tags: [Virtual Account]
+      summary: Daftar virtual account
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: skpd_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar virtual account
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/VirtualAccount'
+
+    post:
+      tags: [Virtual Account]
+      summary: Tambah virtual account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VirtualAccountRequest'
+      responses:
+        '201':
+          description: Virtual account berhasil ditambahkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  # ─────────────────────────────────────────────
+  # ORGANISASI
+  # ─────────────────────────────────────────────
+
+  /organisasi:
+    get:
+      tags: [Organisasi]
+      summary: Daftar unit organisasi
+      parameters:
+        - name: tipe
+          in: query
+          schema:
+            type: string
+            enum: [bidang, skpd, unit_kerja]
+        - name: parent_id
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar organisasi
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Organisasi'
+
+  /organisasi/{id}:
+    get:
+      tags: [Organisasi]
+      summary: Detail organisasi beserta child units
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail organisasi
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  # ─────────────────────────────────────────────
+  # DROPDOWN / REFERENSI
+  # ─────────────────────────────────────────────
+
+  /dropdown/akun:
+    get:
+      tags: [Dropdown]
+      summary: Dropdown kode rekening/akun anggaran
+      description: Data di-cache Redis 1 jam.
+      parameters:
+        - name: level
+          in: query
+          schema:
+            type: integer
+            enum: [1, 2, 3, 4, 5, 6]
+        - name: parent_kode
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Daftar kode akun
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/KodeAkun'
+
+  /dropdown/satuan:
+    get:
+      tags: [Dropdown]
+      summary: Dropdown satuan barang/jasa
+      responses:
+        '200':
+          description: Daftar satuan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Satuan'
+
+  /dropdown/bidang:
+    get:
+      tags: [Dropdown]
+      summary: Dropdown bidang urusan
+      responses:
+        '200':
+          description: Daftar bidang
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+
+  /dropdown/program:
+    get:
+      tags: [Dropdown]
+      summary: Dropdown program
+      parameters:
+        - name: bidang_id
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar program berdasarkan bidang
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+
+  /dropdown/kegiatan:
+    get:
+      tags: [Dropdown]
+      summary: Dropdown kegiatan
+      parameters:
+        - name: program_id
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar kegiatan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+
+  /dropdown/sub-kegiatan:
+    get:
+      tags: [Dropdown]
+      summary: Dropdown sub-kegiatan
+      parameters:
+        - name: kegiatan_id
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar sub-kegiatan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+
+# ─────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token SSO dari sso.jatengprov.go.id
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        default: 15
+        maximum: 100
+
+  responses:
+    Unauthorized:
+      description: Token tidak valid atau expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Data tidak ditemukan
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Validasi gagal
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+
+  schemas:
+
+    BaseResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Berhasil"
+
+    SingleResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+
+    PaginatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            meta:
+              type: object
+              properties:
+                current_page:
+                  type: integer
+                per_page:
+                  type: integer
+                total:
+                  type: integer
+                last_page:
+                  type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        code:
+          type: integer
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+          example: "Validasi gagal"
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    Rekanan:
+      type: object
+      properties:
+        id:
+          type: integer
+        nama:
+          type: string
+          example: "CV Maju Jaya"
+        npwp:
+          type: string
+          example: "01.234.567.8-901.000"
+        kode_usaha:
+          type: string
+          example: "6201"
+        alamat:
+          type: string
+        kota:
+          type: string
+        telepon:
+          type: string
+        email:
+          type: string
+        kode_swift:
+          type: string
+        status:
+          type: string
+          enum: [aktif, nonaktif]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    RekananLookup:
+      type: object
+      properties:
+        id:
+          type: integer
+        nama:
+          type: string
+        npwp:
+          type: string
+        kode_usaha:
+          type: string
+        rekening_default:
+          $ref: '#/components/schemas/RekeningPenerima'
+
+    RekananRequest:
+      type: object
+      required: [nama, npwp, alamat]
+      properties:
+        nama:
+          type: string
+          maxLength: 255
+        npwp:
+          type: string
+          pattern: '^\d{2}\.\d{3}\.\d{3}\.\d{1}-\d{3}\.\d{3}$'
+        kode_usaha:
+          type: string
+        alamat:
+          type: string
+        kota:
+          type: string
+        telepon:
+          type: string
+        email:
+          type: string
+          format: email
+        kode_swift:
+          type: string
+
+    RekeningPenerima:
+      type: object
+      properties:
+        id:
+          type: integer
+        rekanan_id:
+          type: integer
+        nama_pemilik:
+          type: string
+        nama_bank:
+          type: string
+        cabang_bank:
+          type: string
+        nomor_rekening:
+          type: string
+        is_default:
+          type: boolean
+
+    RekeningPenerimaRequest:
+      type: object
+      required: [rekanan_id, nama_pemilik, nama_bank, nomor_rekening]
+      properties:
+        rekanan_id:
+          type: integer
+        nama_pemilik:
+          type: string
+        nama_bank:
+          type: string
+        cabang_bank:
+          type: string
+        nomor_rekening:
+          type: string
+        is_default:
+          type: boolean
+          default: false
+
+    RekeningGaji:
+      type: object
+      properties:
+        id:
+          type: integer
+        nip:
+          type: string
+        nama_pegawai:
+          type: string
+        nama_bank:
+          type: string
+        nomor_rekening:
+          type: string
+        cabang_bank:
+          type: string
+        skpd_id:
+          type: integer
+
+    VirtualAccount:
+      type: object
+      properties:
+        id:
+          type: integer
+        skpd_id:
+          type: integer
+        nama_skpd:
+          type: string
+        nomor_va:
+          type: string
+        bank:
+          type: string
+        status:
+          type: string
+          enum: [aktif, nonaktif]
+
+    VirtualAccountRequest:
+      type: object
+      required: [skpd_id, nomor_va, bank]
+      properties:
+        skpd_id:
+          type: integer
+        nomor_va:
+          type: string
+        bank:
+          type: string
+
+    Organisasi:
+      type: object
+      properties:
+        id:
+          type: integer
+        kode:
+          type: string
+        nama:
+          type: string
+        tipe:
+          type: string
+          enum: [bidang, skpd, unit_kerja]
+        parent_id:
+          type: integer
+          nullable: true
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/Organisasi'
+
+    KodeAkun:
+      type: object
+      properties:
+        kode:
+          type: string
+          example: "5.1.02.01.01.0001"
+        uraian:
+          type: string
+        level:
+          type: integer
+        parent_kode:
+          type: string
+          nullable: true
+
+    Satuan:
+      type: object
+      properties:
+        id:
+          type: integer
+        nama:
+          type: string
+          example: "Unit"
+        singkatan:
+          type: string
+          example: "Unit"

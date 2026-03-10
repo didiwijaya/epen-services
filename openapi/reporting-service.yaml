@@ -1,0 +1,761 @@
+openapi: 3.0.3
+info:
+  title: Reporting Service
+  description: |
+    Service pengelola seluruh output laporan keuangan E-Penatausahaan 2026.
+    Menghasilkan dokumen PDF dan Excel dari data transaksi, kemudian menyimpannya
+    ke MinIO object storage. Service ini bersifat read-only terhadap database
+    transaksi — tidak melakukan operasi tulis ke data keuangan.
+  version: 1.0.0
+  contact:
+    name: Tim E-Penatausahaan
+    email: dev@jatengprov.go.id
+
+servers:
+  - url: https://reporting.epn.jatengprov.go.id/api/v1
+    description: Production
+  - url: https://dev-reporting.epn.jatengprov.go.id/api/v1
+    description: Development
+  - url: http://localhost:8002/api/v1
+    description: Local
+
+tags:
+  - name: Cetak Transaksi
+    description: Generate laporan dokumen transaksi (BPEN, LS, GU, UP)
+  - name: Cetak Pertanggungjawaban
+    description: Generate laporan LPJ, STS, SP2B, SP3B
+  - name: Cetak Anggaran Kas
+    description: Generate laporan RAK dan proyeksi
+  - name: Laporan
+    description: Manajemen hasil laporan yang telah di-generate
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # CETAK TRANSAKSI
+  # ─────────────────────────────────────────────
+
+  /cetak/bpen:
+    post:
+      tags: [Cetak Transaksi]
+      summary: Generate dokumen BPEN
+      description: Menghasilkan PDF dokumen Bukti Penerimaan (BPEN) berdasarkan ID transaksi.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima, laporan sedang di-generate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /cetak/ls-pegawai:
+    post:
+      tags: [Cetak Transaksi]
+      summary: Generate dokumen LS Pegawai
+      description: PDF/Excel daftar pembayaran gaji pegawai (SPP-LS Pegawai).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CetakRequest'
+                - type: object
+                  properties:
+                    format:
+                      type: string
+                      enum: [pdf, excel]
+                      default: pdf
+                    include_rinci:
+                      type: boolean
+                      default: false
+                      description: Sertakan rincian gaji per pegawai
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/ls-barang-jasa:
+    post:
+      tags: [Cetak Transaksi]
+      summary: Generate dokumen LS Barang/Jasa
+      description: PDF dokumen SPP-LS Barang/Jasa beserta rincian item.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/gu:
+    post:
+      tags: [Cetak Transaksi]
+      summary: Generate dokumen GU (Ganti Uang)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/up:
+    post:
+      tags: [Cetak Transaksi]
+      summary: Generate dokumen UP (Uang Persediaan)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/sts:
+    post:
+      tags: [Cetak Transaksi]
+      summary: Generate dokumen STS (Surat Tanda Setoran)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  # ─────────────────────────────────────────────
+  # CETAK PERTANGGUNGJAWABAN
+  # ─────────────────────────────────────────────
+
+  /cetak/lpj-gu:
+    post:
+      tags: [Cetak Pertanggungjawaban]
+      summary: Generate laporan LPJ GU
+      description: Laporan Pertanggungjawaban Bendahara Pengeluaran (GU).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CetakPeriodeRequest'
+                - type: object
+                  properties:
+                    skpd_id:
+                      type: integer
+                      description: ID SKPD yang dilaporkan
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/lpj-tu:
+    post:
+      tags: [Cetak Pertanggungjawaban]
+      summary: Generate laporan LPJ TU (Tambahan Uang)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakPeriodeRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/lpj-kkpd:
+    post:
+      tags: [Cetak Pertanggungjawaban]
+      summary: Generate laporan LPJ KKPD
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakPeriodeRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/sp2b:
+    post:
+      tags: [Cetak Pertanggungjawaban]
+      summary: Generate dokumen SP2B
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/sp3b:
+    post:
+      tags: [Cetak Pertanggungjawaban]
+      summary: Generate dokumen SP3B
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  # ─────────────────────────────────────────────
+  # CETAK ANGGARAN KAS
+  # ─────────────────────────────────────────────
+
+  /cetak/rak-belanja:
+    post:
+      tags: [Cetak Anggaran Kas]
+      summary: Generate laporan RAK Belanja
+      description: Rencana Anggaran Kas Belanja per SKPD atau keseluruhan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CetakPeriodeRequest'
+                - type: object
+                  properties:
+                    skpd_id:
+                      type: integer
+                      nullable: true
+                      description: Kosong = semua SKPD
+                    format:
+                      type: string
+                      enum: [pdf, excel]
+                      default: excel
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/rak-pendapatan:
+    post:
+      tags: [Cetak Anggaran Kas]
+      summary: Generate laporan RAK Pendapatan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CetakPeriodeRequest'
+                - type: object
+                  properties:
+                    format:
+                      type: string
+                      enum: [pdf, excel]
+                      default: excel
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/rak-pembiayaan:
+    post:
+      tags: [Cetak Anggaran Kas]
+      summary: Generate laporan RAK Pembiayaan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakPeriodeRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/proyeksi-belanja:
+    post:
+      tags: [Cetak Anggaran Kas]
+      summary: Generate laporan proyeksi belanja
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CetakPeriodeRequest'
+                - type: object
+                  properties:
+                    skpd_id:
+                      type: integer
+                    format:
+                      type: string
+                      enum: [pdf, excel]
+                      default: excel
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  /cetak/mutasi-kas:
+    post:
+      tags: [Cetak Anggaran Kas]
+      summary: Generate laporan mutasi kas
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CetakPeriodeRequest'
+      responses:
+        '202':
+          description: Request diterima
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+  # ─────────────────────────────────────────────
+  # MANAJEMEN LAPORAN
+  # ─────────────────────────────────────────────
+
+  /laporan:
+    get:
+      tags: [Laporan]
+      summary: Riwayat laporan yang pernah di-generate
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: jenis
+          in: query
+          schema:
+            type: string
+            enum: [bpen, ls_pegawai, ls_barang_jasa, gu, up, sts, lpj_gu, lpj_tu, sp2b, sp3b, rak_belanja, rak_pendapatan, proyeksi_belanja]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, processing, done, failed]
+        - name: tanggal_dari
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: tanggal_sampai
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Daftar riwayat laporan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Laporan'
+
+  /laporan/{id}:
+    get:
+      tags: [Laporan]
+      summary: Detail laporan
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail laporan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Laporan'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /laporan/{id}/status:
+    get:
+      tags: [Laporan]
+      summary: Cek status generate laporan
+      description: Digunakan untuk polling status generate. Status di-cache Redis.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Status laporan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id:
+                            type: integer
+                          status:
+                            type: string
+                            enum: [pending, processing, done, failed]
+                          progress:
+                            type: integer
+                            description: Persentase selesai (0-100)
+                          error_message:
+                            type: string
+                            nullable: true
+
+  /laporan/{id}/download:
+    get:
+      tags: [Laporan]
+      summary: Download file laporan
+      description: Redirect ke pre-signed URL MinIO atau stream file langsung.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '302':
+          description: Redirect ke URL MinIO presigned
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '200':
+          description: File laporan (jika stream langsung)
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /laporan/{id}/retry:
+    post:
+      tags: [Laporan]
+      summary: Ulangi generate laporan yang gagal
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: Laporan dijadwalkan ulang
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CetakAccepted'
+
+# ─────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        default: 15
+
+  responses:
+    ValidationError:
+      description: Validasi gagal
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+    NotFound:
+      description: Data tidak ditemukan
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+
+    BaseResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    SingleResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+
+    PaginatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            meta:
+              $ref: '#/components/schemas/PaginationMeta'
+
+    PaginationMeta:
+      type: object
+      properties:
+        current_page:
+          type: integer
+        per_page:
+          type: integer
+        total:
+          type: integer
+        last_page:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    CetakRequest:
+      type: object
+      required: [referensi_id, tahun]
+      properties:
+        referensi_id:
+          type: integer
+          description: ID record transaksi di monolith
+        tahun:
+          type: integer
+          example: 2026
+        format:
+          type: string
+          enum: [pdf, excel]
+          default: pdf
+        callback_url:
+          type: string
+          format: uri
+          description: Opsional — URL webhook ketika laporan selesai di-generate
+        ttd_required:
+          type: boolean
+          default: false
+          description: Jika true, dokumen akan dikirim ke TTE Service setelah generate
+
+    CetakPeriodeRequest:
+      type: object
+      required: [bulan, tahun]
+      properties:
+        bulan:
+          type: integer
+          minimum: 1
+          maximum: 12
+          example: 3
+        tahun:
+          type: integer
+          example: 2026
+        format:
+          type: string
+          enum: [pdf, excel]
+          default: pdf
+        callback_url:
+          type: string
+          format: uri
+        ttd_required:
+          type: boolean
+          default: false
+
+    CetakAccepted:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Laporan sedang diproses"
+        data:
+          type: object
+          properties:
+            laporan_id:
+              type: integer
+              description: ID laporan untuk polling status
+            status:
+              type: string
+              enum: [pending, processing]
+            estimated_seconds:
+              type: integer
+              description: Estimasi waktu selesai dalam detik
+            status_url:
+              type: string
+              format: uri
+              description: URL untuk cek status laporan
+
+    Laporan:
+      type: object
+      properties:
+        id:
+          type: integer
+        jenis:
+          type: string
+          example: "bpen"
+        referensi_id:
+          type: integer
+          nullable: true
+        periode_bulan:
+          type: integer
+          nullable: true
+        periode_tahun:
+          type: integer
+        format:
+          type: string
+          enum: [pdf, excel]
+        status:
+          type: string
+          enum: [pending, processing, done, failed]
+        file_name:
+          type: string
+          nullable: true
+        file_url:
+          type: string
+          format: uri
+          nullable: true
+          description: Pre-signed URL MinIO (valid 1 jam)
+        file_size:
+          type: integer
+          nullable: true
+          description: Ukuran file dalam bytes
+        ttd_status:
+          type: string
+          enum: [tidak_perlu, menunggu_ttd, sudah_ttd]
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        requested_by:
+          type: integer
+          description: User ID dari SSO
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true

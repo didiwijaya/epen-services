@@ -1,0 +1,1129 @@
+openapi: 3.0.3
+info:
+  title: Contract Service
+  description: |
+    Service pengelola siklus hidup kontrak pengadaan barang/jasa dan kontrak
+    tender E-Penatausahaan 2026. Menjadi prasyarat wajib sebelum modul
+    Pembayaran LS Barang/Jasa dapat diproses di monolith.
+
+    Alur kontrak: Draft → Diajukan → Ditandatangani → Dilaksanakan → Selesai.
+    Setiap kontrak yang ditandatangani akan memicu event yang memungkinkan
+    modul LS Barang/Jasa di monolith membuat SPP-LS.
+  version: 1.0.0
+  contact:
+    name: Tim E-Penatausahaan
+    email: dev@jatengprov.go.id
+
+servers:
+  - url: https://contract.epn.jatengprov.go.id/api/v1
+    description: Production
+  - url: https://dev-contract.epn.jatengprov.go.id/api/v1
+    description: Development
+  - url: http://localhost:8004/api/v1
+    description: Local
+
+tags:
+  - name: Kontrak
+    description: Manajemen kontrak pengadaan reguler
+  - name: Kontrak Tender
+    description: Manajemen kontrak hasil tender/lelang
+  - name: Addendum
+    description: Perubahan/addendum kontrak
+  - name: Validasi
+    description: Endpoint validasi kontrak untuk digunakan monolith
+  - name: Dokumen
+    description: Manajemen file dokumen kontrak di MinIO
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # KONTRAK
+  # ─────────────────────────────────────────────
+
+  /kontrak:
+    get:
+      tags: [Kontrak]
+      summary: Daftar kontrak
+      description: Mengambil daftar kontrak dengan filter dan pagination.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, diajukan, ditandatangani, dilaksanakan, selesai, dibatalkan]
+        - name: rekanan_id
+          in: query
+          schema:
+            type: integer
+          description: Filter berdasarkan ID rekanan dari Master Data Service
+        - name: skpd_id
+          in: query
+          schema:
+            type: integer
+        - name: tahun
+          in: query
+          schema:
+            type: integer
+            example: 2026
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Cari berdasarkan nomor kontrak atau nama pekerjaan
+        - name: tanggal_dari
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: tanggal_sampai
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Daftar kontrak berhasil diambil
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Kontrak'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Kontrak]
+      summary: Buat kontrak baru
+      description: |
+        Membuat kontrak baru dalam status draft. Rekanan akan divalidasi
+        ke Master Data Service sebelum kontrak disimpan.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KontrakRequest'
+      responses:
+        '201':
+          description: Kontrak berhasil dibuat
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Kontrak'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '424':
+          description: Rekanan tidak ditemukan di Master Data Service
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /kontrak/{id}:
+    get:
+      tags: [Kontrak]
+      summary: Detail kontrak
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail kontrak
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KontrakDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Kontrak]
+      summary: Update data kontrak
+      description: Hanya bisa diupdate jika status masih draft atau diajukan.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KontrakRequest'
+      responses:
+        '200':
+          description: Kontrak berhasil diupdate
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Kontrak'
+        '409':
+          description: Kontrak tidak dapat diubah pada status saat ini
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [Kontrak]
+      summary: Hapus kontrak draft
+      description: Hanya bisa dihapus jika status masih draft. Soft delete.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Kontrak berhasil dihapus
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+        '409':
+          description: Kontrak tidak bisa dihapus (bukan draft)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /kontrak/{id}/status:
+    put:
+      tags: [Kontrak]
+      summary: Update status kontrak
+      description: |
+        Transisi status kontrak mengikuti alur yang telah ditentukan:
+        - draft → diajukan
+        - diajukan → ditandatangani (akan otomatis request TTE ke TTE/TNDE Service)
+        - ditandatangani → dilaksanakan
+        - dilaksanakan → selesai
+        - diajukan/ditandatangani → dibatalkan
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [diajukan, ditandatangani, dilaksanakan, selesai, dibatalkan]
+                catatan:
+                  type: string
+                  description: Catatan atau alasan perubahan status
+                tanggal_ttd:
+                  type: string
+                  format: date
+                  description: Wajib diisi jika status = ditandatangani
+                penandatangan:
+                  type: array
+                  description: Wajib diisi jika status = ditandatangani
+                  items:
+                    type: object
+                    properties:
+                      nik:
+                        type: string
+                      nama:
+                        type: string
+                      jabatan:
+                        type: string
+                      pihak:
+                        type: string
+                        enum: [pihak_pertama, pihak_kedua]
+      responses:
+        '200':
+          description: Status kontrak berhasil diubah
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Kontrak'
+        '409':
+          description: Transisi status tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ─────────────────────────────────────────────
+  # ADDENDUM
+  # ─────────────────────────────────────────────
+
+  /kontrak/{id}/addendum:
+    get:
+      tags: [Addendum]
+      summary: Daftar addendum sebuah kontrak
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Daftar addendum
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Addendum'
+
+    post:
+      tags: [Addendum]
+      summary: Buat addendum kontrak
+      description: |
+        Addendum dapat mengubah nilai kontrak, tanggal berakhir, atau lingkup pekerjaan.
+        Kontrak harus dalam status dilaksanakan untuk bisa dibuat addendum.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddendumRequest'
+      responses:
+        '201':
+          description: Addendum berhasil dibuat
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Addendum'
+        '409':
+          description: Kontrak tidak dalam status yang memungkinkan addendum
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /kontrak/{id}/addendum/{addendum_id}:
+    get:
+      tags: [Addendum]
+      summary: Detail addendum
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: addendum_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detail addendum
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Addendum'
+
+  # ─────────────────────────────────────────────
+  # KONTRAK TENDER
+  # ─────────────────────────────────────────────
+
+  /kontrak-tender:
+    get:
+      tags: [Kontrak Tender]
+      summary: Daftar kontrak tender
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, diajukan, ditandatangani, dilaksanakan, selesai, dibatalkan]
+        - name: rekanan_id
+          in: query
+          schema:
+            type: integer
+        - name: tahun
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Daftar kontrak tender
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/KontrakTender'
+
+    post:
+      tags: [Kontrak Tender]
+      summary: Buat kontrak tender baru
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KontrakTenderRequest'
+      responses:
+        '201':
+          description: Kontrak tender berhasil dibuat
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KontrakTender'
+
+  /kontrak-tender/{id}:
+    get:
+      tags: [Kontrak Tender]
+      summary: Detail kontrak tender
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail kontrak tender
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KontrakTender'
+
+    put:
+      tags: [Kontrak Tender]
+      summary: Update kontrak tender
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KontrakTenderRequest'
+      responses:
+        '200':
+          description: Kontrak tender berhasil diupdate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  /kontrak-tender/{id}/status:
+    put:
+      tags: [Kontrak Tender]
+      summary: Update status kontrak tender
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [diajukan, ditandatangani, dilaksanakan, selesai, dibatalkan]
+                catatan:
+                  type: string
+      responses:
+        '200':
+          description: Status berhasil diubah
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleResponse'
+
+  # ─────────────────────────────────────────────
+  # VALIDASI (dipakai Monolith)
+  # ─────────────────────────────────────────────
+
+  /kontrak/{id}/validasi:
+    get:
+      tags: [Validasi]
+      summary: Validasi kontrak untuk keperluan LS Barang/Jasa
+      description: |
+        Digunakan oleh monolith (modul LsBarangJasa) untuk memvalidasi apakah
+        sebuah kontrak aktif dan dapat digunakan sebagai dasar SPP-LS.
+
+        Validasi mencakup:
+        - Status kontrak harus 'dilaksanakan'
+        - Kontrak belum melewati tanggal berakhir
+        - Nilai realisasi tidak melebihi nilai kontrak (termasuk addendum)
+        - Rekanan masih aktif di Master Data Service
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: nilai_spp
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+          description: Nilai SPP-LS yang akan dibuat, untuk validasi sisa nilai kontrak
+      responses:
+        '200':
+          description: Hasil validasi kontrak
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ValidasiResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /kontrak/validasi/bulk:
+    post:
+      tags: [Validasi]
+      summary: Validasi banyak kontrak sekaligus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [kontrak_id, nilai_spp]
+                    properties:
+                      kontrak_id:
+                        type: integer
+                      nilai_spp:
+                        type: number
+      responses:
+        '200':
+          description: Hasil validasi batch
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ValidasiResult'
+
+  # ─────────────────────────────────────────────
+  # DOKUMEN (MinIO)
+  # ─────────────────────────────────────────────
+
+  /kontrak/{id}/dokumen:
+    get:
+      tags: [Dokumen]
+      summary: Daftar file dokumen sebuah kontrak
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Daftar dokumen kontrak
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DokumenFile'
+
+    post:
+      tags: [Dokumen]
+      summary: Upload dokumen kontrak ke MinIO
+      description: Upload file dokumen (PDF, scan TTD, addendum). Disimpan di bucket contracts/.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, tipe]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                tipe:
+                  type: string
+                  enum: [kontrak_asli, addendum, berita_acara, jaminan, lainnya]
+                keterangan:
+                  type: string
+      responses:
+        '201':
+          description: File berhasil diupload ke MinIO
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DokumenFile'
+
+  /kontrak/{id}/dokumen/{dokumen_id}/download:
+    get:
+      tags: [Dokumen]
+      summary: Download file dokumen kontrak
+      description: Redirect ke pre-signed URL MinIO. Valid 1 jam.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: dokumen_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '302':
+          description: Redirect ke URL MinIO presigned
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+# ─────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        default: 15
+
+  responses:
+    Unauthorized:
+      description: Token tidak valid atau expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Data tidak ditemukan
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Validasi gagal
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+
+  schemas:
+
+    BaseResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    SingleResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+
+    PaginatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            meta:
+              type: object
+              properties:
+                current_page:
+                  type: integer
+                per_page:
+                  type: integer
+                total:
+                  type: integer
+                last_page:
+                  type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        code:
+          type: integer
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    Kontrak:
+      type: object
+      properties:
+        id:
+          type: integer
+        nomor:
+          type: string
+          example: "027/001/PKS/BPKD/2026"
+        nama_pekerjaan:
+          type: string
+          example: "Pengadaan ATK Kantor Tahun 2026"
+        rekanan_id:
+          type: integer
+          description: Referensi ID rekanan dari Master Data Service
+        nama_rekanan:
+          type: string
+          description: Snapshot nama rekanan saat kontrak dibuat
+        skpd_id:
+          type: integer
+        tahun:
+          type: integer
+          example: 2026
+        tanggal_mulai:
+          type: string
+          format: date
+        tanggal_selesai:
+          type: string
+          format: date
+        nilai_kontrak:
+          type: number
+          format: double
+          example: 150000000
+        nilai_addendum:
+          type: number
+          format: double
+          description: Total nilai perubahan dari addendum
+          default: 0
+        nilai_efektif:
+          type: number
+          format: double
+          description: Nilai kontrak + addendum
+        nilai_realisasi:
+          type: number
+          format: double
+          description: Total SPP-LS yang sudah dibuat berdasarkan kontrak ini
+          default: 0
+        sisa_nilai:
+          type: number
+          format: double
+          description: nilai_efektif - nilai_realisasi
+        status:
+          type: string
+          enum: [draft, diajukan, ditandatangani, dilaksanakan, selesai, dibatalkan]
+        tanggal_ttd:
+          type: string
+          format: date
+          nullable: true
+        sign_id:
+          type: string
+          nullable: true
+          description: Referensi ID dari TTE/TNDE Service
+        catatan:
+          type: string
+          nullable: true
+        created_by:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    KontrakDetail:
+      allOf:
+        - $ref: '#/components/schemas/Kontrak'
+        - type: object
+          properties:
+            addendum:
+              type: array
+              items:
+                $ref: '#/components/schemas/Addendum'
+            dokumen:
+              type: array
+              items:
+                $ref: '#/components/schemas/DokumenFile'
+            penandatangan:
+              type: array
+              items:
+                $ref: '#/components/schemas/PenandatanganKontrak'
+            riwayat_status:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiwayatStatus'
+
+    KontrakRequest:
+      type: object
+      required: [nomor, nama_pekerjaan, rekanan_id, skpd_id, tanggal_mulai, tanggal_selesai, nilai_kontrak]
+      properties:
+        nomor:
+          type: string
+          maxLength: 100
+        nama_pekerjaan:
+          type: string
+          maxLength: 500
+        rekanan_id:
+          type: integer
+          description: Harus valid di Master Data Service
+        skpd_id:
+          type: integer
+        tahun:
+          type: integer
+          default: 2026
+        tanggal_mulai:
+          type: string
+          format: date
+        tanggal_selesai:
+          type: string
+          format: date
+        nilai_kontrak:
+          type: number
+          format: double
+          minimum: 1
+        catatan:
+          type: string
+
+    KontrakTender:
+      type: object
+      properties:
+        id:
+          type: integer
+        nomor:
+          type: string
+        nama_pekerjaan:
+          type: string
+        nomor_tender:
+          type: string
+          description: Nomor paket tender dari LPSE/SIRUP
+        rekanan_id:
+          type: integer
+        nama_rekanan:
+          type: string
+        skpd_id:
+          type: integer
+        tahun:
+          type: integer
+        tanggal_mulai:
+          type: string
+          format: date
+        tanggal_selesai:
+          type: string
+          format: date
+        nilai_hps:
+          type: number
+          format: double
+          description: Nilai Harga Perkiraan Sendiri
+        nilai_penawaran:
+          type: number
+          format: double
+          description: Nilai penawaran rekanan yang menang
+        nilai_kontrak:
+          type: number
+          format: double
+        nilai_realisasi:
+          type: number
+          format: double
+        sisa_nilai:
+          type: number
+          format: double
+        status:
+          type: string
+          enum: [draft, diajukan, ditandatangani, dilaksanakan, selesai, dibatalkan]
+        jenis_pengadaan:
+          type: string
+          enum: [barang, jasa_konsultansi, jasa_lainnya, pekerjaan_konstruksi]
+        metode_pemilihan:
+          type: string
+          enum: [tender, seleksi, pengadaan_langsung, penunjukan_langsung, e_purchasing]
+        created_at:
+          type: string
+          format: date-time
+
+    KontrakTenderRequest:
+      type: object
+      required: [nomor, nama_pekerjaan, nomor_tender, rekanan_id, skpd_id, tanggal_mulai, tanggal_selesai, nilai_hps, nilai_penawaran, nilai_kontrak, jenis_pengadaan, metode_pemilihan]
+      properties:
+        nomor:
+          type: string
+        nama_pekerjaan:
+          type: string
+        nomor_tender:
+          type: string
+        rekanan_id:
+          type: integer
+        skpd_id:
+          type: integer
+        tahun:
+          type: integer
+          default: 2026
+        tanggal_mulai:
+          type: string
+          format: date
+        tanggal_selesai:
+          type: string
+          format: date
+        nilai_hps:
+          type: number
+          format: double
+        nilai_penawaran:
+          type: number
+          format: double
+        nilai_kontrak:
+          type: number
+          format: double
+        jenis_pengadaan:
+          type: string
+          enum: [barang, jasa_konsultansi, jasa_lainnya, pekerjaan_konstruksi]
+        metode_pemilihan:
+          type: string
+          enum: [tender, seleksi, pengadaan_langsung, penunjukan_langsung, e_purchasing]
+
+    Addendum:
+      type: object
+      properties:
+        id:
+          type: integer
+        kontrak_id:
+          type: integer
+        nomor_addendum:
+          type: integer
+          description: Urutan addendum ke-N
+        nomor_surat:
+          type: string
+        tanggal:
+          type: string
+          format: date
+        jenis:
+          type: string
+          enum: [nilai, waktu, nilai_dan_waktu, lingkup_pekerjaan]
+        nilai_perubahan:
+          type: number
+          format: double
+          nullable: true
+          description: Positif = penambahan, negatif = pengurangan
+        tanggal_selesai_baru:
+          type: string
+          format: date
+          nullable: true
+        uraian:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AddendumRequest:
+      type: object
+      required: [nomor_surat, tanggal, jenis, uraian]
+      properties:
+        nomor_surat:
+          type: string
+        tanggal:
+          type: string
+          format: date
+        jenis:
+          type: string
+          enum: [nilai, waktu, nilai_dan_waktu, lingkup_pekerjaan]
+        nilai_perubahan:
+          type: number
+          format: double
+          description: Wajib jika jenis adalah nilai atau nilai_dan_waktu
+        tanggal_selesai_baru:
+          type: string
+          format: date
+          description: Wajib jika jenis adalah waktu atau nilai_dan_waktu
+        uraian:
+          type: string
+
+    ValidasiResult:
+      type: object
+      properties:
+        kontrak_id:
+          type: integer
+        valid:
+          type: boolean
+          description: true jika kontrak dapat digunakan untuk SPP-LS
+        alasan_tidak_valid:
+          type: array
+          items:
+            type: string
+          description: Daftar alasan jika valid = false
+        detail:
+          type: object
+          properties:
+            status:
+              type: string
+            tanggal_berakhir:
+              type: string
+              format: date
+            masih_berlaku:
+              type: boolean
+            nilai_efektif:
+              type: number
+            nilai_realisasi:
+              type: number
+            sisa_nilai:
+              type: number
+            nilai_spp_diajukan:
+              type: number
+            cukup_saldo:
+              type: boolean
+            rekanan_aktif:
+              type: boolean
+
+    DokumenFile:
+      type: object
+      properties:
+        id:
+          type: integer
+        kontrak_id:
+          type: integer
+        tipe:
+          type: string
+          enum: [kontrak_asli, addendum, berita_acara, jaminan, lainnya]
+        nama_file:
+          type: string
+        ukuran:
+          type: integer
+          description: Ukuran file dalam bytes
+        mime_type:
+          type: string
+        download_url:
+          type: string
+          format: uri
+          description: Pre-signed URL MinIO (valid 1 jam)
+        keterangan:
+          type: string
+          nullable: true
+        uploaded_by:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    PenandatanganKontrak:
+      type: object
+      properties:
+        nik:
+          type: string
+        nama:
+          type: string
+        jabatan:
+          type: string
+        pihak:
+          type: string
+          enum: [pihak_pertama, pihak_kedua]
+        tanggal_ttd:
+          type: string
+          format: date
+
+    RiwayatStatus:
+      type: object
+      properties:
+        status:
+          type: string
+        catatan:
+          type: string
+          nullable: true
+        changed_by:
+          type: integer
+        changed_at:
+          type: string
+          format: date-time

@@ -1,0 +1,965 @@
+openapi: 3.0.3
+info:
+  title: TTE / TNDE Service
+  description: |
+    Service pengelola verifikasi dan penandatanganan dokumen secara elektronik.
+    Bertindak sebagai anti-corruption layer antara sistem E-Penatausahaan 2026
+    dengan layanan TTE (Tanda Tangan Elektronik) eksternal milik Pemerintah
+    Provinsi Jawa Tengah (tte.epn.jatengprov.go.id).
+
+    Semua dokumen keuangan resmi (BPEN, LPJ, SPD, Koreksi, dll) yang memerlukan
+    tanda tangan pejabat akan melewati service ini sebelum dianggap sah.
+  version: 1.0.0
+  contact:
+    name: Tim E-Penatausahaan
+    email: dev@jatengprov.go.id
+
+servers:
+  - url: https://tte.epn.jatengprov.go.id/api/v1
+    description: Production
+  - url: https://dev-tte.epn.jatengprov.go.id/api/v1
+    description: Development
+  - url: http://localhost:8003/api/v1
+    description: Local
+
+tags:
+  - name: Penandatanganan
+    description: Request dan pengelolaan tanda tangan elektronik
+  - name: Verifikasi
+    description: Verifikasi keaslian dokumen yang telah ditandatangani
+  - name: TNDE
+    description: Nota Dinas Elektronik dan SPD
+  - name: Log & Audit
+    description: Riwayat dan audit trail penandatanganan
+  - name: Webhook
+    description: Callback dari layanan TTE eksternal
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ─────────────────────────────────────────────
+  # PENANDATANGANAN
+  # ─────────────────────────────────────────────
+
+  /sign/request:
+    post:
+      tags: [Penandatanganan]
+      summary: Request tanda tangan elektronik pada dokumen
+      description: |
+        Mengirim dokumen ke layanan TTE eksternal untuk ditandatangani.
+        Alur: Upload file → Forward ke TTE eksternal → Simpan status → Return ID tracking.
+        Dokumen akan disimpan sementara lalu dipindah ke MinIO (bucket tte-docs/) setelah signed.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [dokumen_id, tipe_dokumen, file, penandatangan]
+              properties:
+                dokumen_id:
+                  type: string
+                  description: ID unik dokumen dari sistem pemanggil (monolith/reporting)
+                  example: "BPEN-2026-001234"
+                tipe_dokumen:
+                  type: string
+                  enum: [bpen, ls_pegawai, ls_barang_jasa, gu, up, lpj, spd, sp2b, sp3b, sts, koreksi, kontrak]
+                  description: Jenis dokumen yang akan ditandatangani
+                file:
+                  type: string
+                  format: binary
+                  description: File PDF dokumen yang akan ditandatangani
+                penandatangan:
+                  type: array
+                  description: Daftar pejabat penandatangan (urutan = urutan TTD)
+                  items:
+                    $ref: '#/components/schemas/Penandatangan'
+                callback_url:
+                  type: string
+                  format: uri
+                  description: URL webhook untuk notifikasi setelah semua TTD selesai
+                keterangan:
+                  type: string
+                  description: Keterangan tambahan untuk audit log
+      responses:
+        '202':
+          description: Request tanda tangan diterima dan sedang diproses
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SignRequestAccepted'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '503':
+          description: Layanan TTE eksternal tidak tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sign/{sign_id}/status:
+    get:
+      tags: [Penandatanganan]
+      summary: Cek status penandatanganan
+      description: |
+        Polling status tanda tangan. Status di-cache Redis dengan TTL 30 detik.
+        Gunakan endpoint ini untuk menunggu dokumen selesai ditandatangani.
+      parameters:
+        - name: sign_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ID tracking dari response /sign/request
+      responses:
+        '200':
+          description: Status penandatanganan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SignStatus'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /sign/{sign_id}/cancel:
+    post:
+      tags: [Penandatanganan]
+      summary: Batalkan request penandatanganan
+      description: Hanya bisa dibatalkan jika status masih pending atau menunggu penandatangan.
+      parameters:
+        - name: sign_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                alasan:
+                  type: string
+                  description: Alasan pembatalan
+      responses:
+        '200':
+          description: Request berhasil dibatalkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+        '409':
+          description: Tidak dapat dibatalkan (sudah signed atau dalam proses signing)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sign/{sign_id}/download:
+    get:
+      tags: [Penandatanganan]
+      summary: Download dokumen yang sudah ditandatangani
+      description: Redirect ke pre-signed URL MinIO bucket tte-docs/. Valid 1 jam.
+      parameters:
+        - name: sign_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect ke URL MinIO
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Dokumen belum selesai ditandatangani
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sign/bulk:
+    post:
+      tags: [Penandatanganan]
+      summary: Request tanda tangan untuk banyak dokumen sekaligus
+      description: Batch signing — berguna untuk LPJ bulanan yang berisi banyak dokumen.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dokumen_ids, penandatangan]
+              properties:
+                dokumen_ids:
+                  type: array
+                  items:
+                    type: string
+                  description: Daftar dokumen_id yang akan di-sign
+                penandatangan:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Penandatangan'
+                callback_url:
+                  type: string
+                  format: uri
+      responses:
+        '202':
+          description: Batch request diterima
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          batch_id:
+                            type: string
+                          total:
+                            type: integer
+                          status_url:
+                            type: string
+                            format: uri
+
+  /sign/batch/{batch_id}/status:
+    get:
+      tags: [Penandatanganan]
+      summary: Cek status batch signing
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status batch penandatanganan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          batch_id:
+                            type: string
+                          total:
+                            type: integer
+                          selesai:
+                            type: integer
+                          gagal:
+                            type: integer
+                          pending:
+                            type: integer
+                          items:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/SignStatus'
+
+  # ─────────────────────────────────────────────
+  # VERIFIKASI
+  # ─────────────────────────────────────────────
+
+  /verify:
+    post:
+      tags: [Verifikasi]
+      summary: Verifikasi keaslian dokumen yang telah ditandatangani
+      description: Memeriksa apakah dokumen PDF memiliki tanda tangan digital yang valid dan belum dimodifikasi.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: File PDF yang akan diverifikasi
+                dokumen_id:
+                  type: string
+                  description: Opsional — ID dokumen untuk cross-check dengan database internal
+      responses:
+        '200':
+          description: Hasil verifikasi dokumen
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/VerifikasiResult'
+
+  /verify/{dokumen_id}:
+    get:
+      tags: [Verifikasi]
+      summary: Verifikasi dokumen berdasarkan ID internal
+      description: Cek status dan keaslian dokumen berdasarkan ID yang tersimpan di database tte_db.
+      parameters:
+        - name: dokumen_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Hasil verifikasi
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/VerifikasiResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ─────────────────────────────────────────────
+  # TNDE (Nota Dinas Elektronik & SPD)
+  # ─────────────────────────────────────────────
+
+  /tnde:
+    get:
+      tags: [TNDE]
+      summary: Daftar dokumen TNDE
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: tipe
+          in: query
+          schema:
+            type: string
+            enum: [nota_dinas, spd]
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [draft, menunggu_ttd, signed, ditolak]
+        - name: tanggal_dari
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: tanggal_sampai
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Daftar dokumen TNDE
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TNDEDokumen'
+
+    post:
+      tags: [TNDE]
+      summary: Buat dokumen TNDE baru
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TNDERequest'
+      responses:
+        '201':
+          description: Dokumen TNDE berhasil dibuat
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TNDEDokumen'
+
+  /tnde/{id}:
+    get:
+      tags: [TNDE]
+      summary: Detail dokumen TNDE
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Detail dokumen TNDE
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SingleResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TNDEDokumen'
+
+  /tnde/{id}/submit:
+    post:
+      tags: [TNDE]
+      summary: Submit TNDE untuk ditandatangani
+      description: Mengubah status dari draft ke menunggu_ttd dan memulai proses signing.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: Dokumen disubmit untuk penandatanganan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+
+  /tnde-spd:
+    get:
+      tags: [TNDE]
+      summary: Daftar verifikasi TTE SPD
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [menunggu, terverifikasi, ditolak]
+      responses:
+        '200':
+          description: Daftar TNDE SPD
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TNDESpd'
+
+  # ─────────────────────────────────────────────
+  # LOG & AUDIT
+  # ─────────────────────────────────────────────
+
+  /log/{dokumen_id}:
+    get:
+      tags: [Log & Audit]
+      summary: Riwayat lengkap penandatanganan sebuah dokumen
+      parameters:
+        - name: dokumen_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Riwayat penandatanganan
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BaseResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          dokumen_id:
+                            type: string
+                          tipe_dokumen:
+                            type: string
+                          logs:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/AuditLog'
+
+  /log/nik/{nik}:
+    get:
+      tags: [Log & Audit]
+      summary: Riwayat penandatanganan oleh NIK tertentu
+      parameters:
+        - name: nik
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: tanggal_dari
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: tanggal_sampai
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Riwayat penandatanganan oleh NIK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PaginatedResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AuditLog'
+
+  # ─────────────────────────────────────────────
+  # WEBHOOK
+  # ─────────────────────────────────────────────
+
+  /webhook/callback:
+    post:
+      tags: [Webhook]
+      summary: Callback dari layanan TTE eksternal
+      description: |
+        Endpoint ini dipanggil oleh layanan TTE eksternal (tte.epn.jatengprov.go.id)
+        ketika proses penandatanganan selesai (sukses atau gagal).
+        Tidak memerlukan autentikasi Bearer — menggunakan HMAC signature pada header.
+      security: []
+      parameters:
+        - name: X-TTE-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 signature dari payload untuk verifikasi keaslian callback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookPayload'
+      responses:
+        '200':
+          description: Callback berhasil diterima dan diproses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BaseResponse'
+        '400':
+          description: Signature tidak valid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# ─────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        default: 15
+
+  responses:
+    ValidationError:
+      description: Validasi gagal
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+    NotFound:
+      description: Data tidak ditemukan
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+
+    BaseResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+
+    SingleResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+
+    PaginatedResponse:
+      allOf:
+        - $ref: '#/components/schemas/BaseResponse'
+        - type: object
+          properties:
+            meta:
+              type: object
+              properties:
+                current_page:
+                  type: integer
+                per_page:
+                  type: integer
+                total:
+                  type: integer
+                last_page:
+                  type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        code:
+          type: integer
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+
+    Penandatangan:
+      type: object
+      required: [nik, nama, jabatan, urutan]
+      properties:
+        nik:
+          type: string
+          description: NIK pejabat penandatangan
+          example: "3374012505800001"
+        nama:
+          type: string
+          example: "Drs. Bambang Wijaya, M.Si."
+        jabatan:
+          type: string
+          example: "Kepala BPKD Provinsi Jawa Tengah"
+        nip:
+          type: string
+          nullable: true
+        urutan:
+          type: integer
+          description: Urutan tanda tangan (1 = pertama)
+          minimum: 1
+
+    SignRequestAccepted:
+      type: object
+      properties:
+        sign_id:
+          type: string
+          description: ID unik tracking penandatanganan
+          example: "SGN-20260309-ABC123"
+        dokumen_id:
+          type: string
+        tipe_dokumen:
+          type: string
+        status:
+          type: string
+          enum: [pending, dikirim_ke_tte]
+        total_penandatangan:
+          type: integer
+        status_url:
+          type: string
+          format: uri
+
+    SignStatus:
+      type: object
+      properties:
+        sign_id:
+          type: string
+        dokumen_id:
+          type: string
+        tipe_dokumen:
+          type: string
+        status:
+          type: string
+          enum: [pending, dikirim_ke_tte, menunggu_penandatangan, sebagian_signed, selesai, gagal, dibatalkan]
+        total_penandatangan:
+          type: integer
+        sudah_sign:
+          type: integer
+        penandatangan_detail:
+          type: array
+          items:
+            type: object
+            properties:
+              nik:
+                type: string
+              nama:
+                type: string
+              jabatan:
+                type: string
+              urutan:
+                type: integer
+              status:
+                type: string
+                enum: [menunggu, sudah_sign, ditolak]
+              waktu_sign:
+                type: string
+                format: date-time
+                nullable: true
+        file_url:
+          type: string
+          format: uri
+          nullable: true
+          description: URL MinIO dokumen yang sudah ditandatangani (tersedia jika status selesai)
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    VerifikasiResult:
+      type: object
+      properties:
+        valid:
+          type: boolean
+          description: true jika dokumen valid dan belum dimodifikasi
+        dokumen_id:
+          type: string
+          nullable: true
+        tanda_tangan:
+          type: array
+          items:
+            type: object
+            properties:
+              nama:
+                type: string
+              nik:
+                type: string
+              jabatan:
+                type: string
+              waktu_sign:
+                type: string
+                format: date-time
+              status_sertifikat:
+                type: string
+                enum: [valid, expired, dicabut]
+        integritas_dokumen:
+          type: string
+          enum: [utuh, telah_dimodifikasi]
+        pesan:
+          type: string
+
+    TNDEDokumen:
+      type: object
+      properties:
+        id:
+          type: integer
+        nomor:
+          type: string
+          example: "100/ND/BPKD/III/2026"
+        tipe:
+          type: string
+          enum: [nota_dinas, spd]
+        perihal:
+          type: string
+        tanggal:
+          type: string
+          format: date
+        pengirim:
+          type: string
+        penerima:
+          type: string
+        status:
+          type: string
+          enum: [draft, menunggu_ttd, signed, ditolak]
+        sign_id:
+          type: string
+          nullable: true
+        file_url:
+          type: string
+          format: uri
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    TNDERequest:
+      type: object
+      required: [tipe, perihal, tanggal, pengirim, penerima]
+      properties:
+        tipe:
+          type: string
+          enum: [nota_dinas, spd]
+        nomor:
+          type: string
+          description: Opsional — bisa auto-generate
+        perihal:
+          type: string
+        tanggal:
+          type: string
+          format: date
+        pengirim:
+          type: string
+        penerima:
+          type: string
+        isi:
+          type: string
+          description: Isi nota dinas (plain text atau HTML)
+        penandatangan:
+          type: array
+          items:
+            $ref: '#/components/schemas/Penandatangan'
+
+    TNDESpd:
+      type: object
+      properties:
+        id:
+          type: integer
+        spd_id:
+          type: integer
+          description: Referensi ID SPD di monolith
+        nomor_spd:
+          type: string
+        status:
+          type: string
+          enum: [menunggu, terverifikasi, ditolak]
+        catatan:
+          type: string
+          nullable: true
+        verified_at:
+          type: string
+          format: date-time
+          nullable: true
+        verified_by:
+          type: string
+          nullable: true
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        dokumen_id:
+          type: string
+        tipe_dokumen:
+          type: string
+        aksi:
+          type: string
+          enum: [request_sign, dikirim_ke_tte, signed, ditolak, dibatalkan, diverifikasi]
+        nik:
+          type: string
+          nullable: true
+        nama:
+          type: string
+          nullable: true
+        keterangan:
+          type: string
+          nullable: true
+        ip_address:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookPayload:
+      type: object
+      required: [sign_id, status, timestamp]
+      properties:
+        sign_id:
+          type: string
+        dokumen_id:
+          type: string
+        status:
+          type: string
+          enum: [selesai, gagal, sebagian_signed]
+        penandatangan:
+          type: array
+          items:
+            type: object
+            properties:
+              nik:
+                type: string
+              status:
+                type: string
+                enum: [sudah_sign, ditolak]
+              waktu:
+                type: string
+                format: date-time
+        file_url:
+          type: string
+          format: uri
+          description: URL dokumen yang sudah ditandatangani (jika status selesai)
+        error_message:
+          type: string
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
