@@ -66,6 +66,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ─────────────────────────────────────────────
+  # REKANAN REALTIME VIEWER (Kafka consumer + SSE)
+  # ─────────────────────────────────────────────
+  rekanan-realtime:
+    build:
+      context: ./rekanan-realtime
+      dockerfile: Dockerfile
+    container_name: rekanan-realtime
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      PORT: 3000
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
 volumes:
   kafka-data:
     driver: local

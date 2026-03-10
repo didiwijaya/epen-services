@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Realtime Rekanan Table</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        margin: 0;
+        padding: 1.5rem;
+        background: #0f172a;
+        color: #e5e7eb;
+      }
+      h1 {
+        margin-bottom: 0.5rem;
+      }
+      .subtitle {
+        color: #9ca3af;
+        margin-bottom: 1.5rem;
+        font-size: 0.9rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #020617;
+        border-radius: 0.75rem;
+        overflow: hidden;
+        box-shadow: 0 20px 40px rgba(15, 23, 42, 0.8);
+      }
+      thead {
+        background: linear-gradient(90deg, #0ea5e9, #6366f1);
+      }
+      th,
+      td {
+        padding: 0.75rem 1rem;
+        text-align: left;
+        font-size: 0.9rem;
+      }
+      th {
+        color: #f9fafb;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      tbody tr:nth-child(even) {
+        background: #020617;
+      }
+      tbody tr:nth-child(odd) {
+        background: #020617cc;
+      }
+      tbody tr:hover {
+        background: #111827;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge-aktif {
+        background: rgba(22, 163, 74, 0.15);
+        color: #4ade80;
+      }
+      .badge-nonaktif {
+        background: rgba(220, 38, 38, 0.15);
+        color: #f97373;
+      }
+      .status-dot {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        margin-right: 0.35rem;
+      }
+      .dot-aktif {
+        background: #22c55e;
+      }
+      .dot-nonaktif {
+        background: #ef4444;
+      }
+      .pill {
+        display: inline-flex;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        border: 1px solid rgba(148, 163, 184, 0.4);
+        font-size: 0.75rem;
+        color: #cbd5f5;
+      }
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.75rem;
+        gap: 0.5rem;
+      }
+      .toolbar-left {
+        display: flex;
+        flex-direction: column;
+        gap: 0.25rem;
+      }
+      .stats {
+        font-size: 0.8rem;
+        color: #9ca3af;
+      }
+      .indicator {
+        font-size: 0.8rem;
+        color: #9ca3af;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
+      .dot-live {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        background: #22c55e;
+        box-shadow: 0 0 10px rgba(34, 197, 94, 0.8);
+      }
+      .dot-offline {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 999px;
+        background: #ef4444;
+      }
+      @media (max-width: 768px) {
+        table {
+          font-size: 0.8rem;
+        }
+        th,
+        td {
+          padding: 0.5rem 0.6rem;
+        }
+        body {
+          padding: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Rekanan Realtime View</h1>
+    <div class="subtitle">
+      Tabel ini akan otomatis ter-update setiap ada event
+      <code>rekanan.created</code>, <code>rekanan.updated</code>, atau
+      <code>rekanan.deactivated</code> dari service <code>master-data</code>.
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="stats" id="stats">Menunggu data rekanan...</div>
+        <div class="indicator" id="connection-indicator">
+          <span class="dot-offline"></span>
+          <span>Disconnected</span>
+        </div>
+      </div>
+      <div class="pill">
+        Source: <span id="source-label" style="margin-left: 0.3rem">Kafka → SSE</span>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 60px">ID</th>
+          <th>Nama</th>
+          <th>NPWP</th>
+          <th>Kode Usaha</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="rekanan-body">
+        <tr>
+          <td colspan="5" style="text-align: center; color: #9ca3af; padding: 1.5rem">
+            Menunggu data dari server...
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <script>
+      const tbody = document.getElementById('rekanan-body');
+      const stats = document.getElementById('stats');
+      const indicator = document.getElementById('connection-indicator');
+
+      function setConnectionStatus(connected) {
+        indicator.innerHTML = '';
+        const dot = document.createElement('span');
+        dot.className = connected ? 'dot-live' : 'dot-offline';
+        const text = document.createElement('span');
+        text.textContent = connected ? 'Live via SSE' : 'Disconnected';
+        indicator.appendChild(dot);
+        indicator.appendChild(text);
+      }
+
+      function renderTable(data) {
+        tbody.innerHTML = '';
+        if (!data || data.length === 0) {
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 5;
+          td.style.textAlign = 'center';
+          td.style.color = '#9ca3af';
+          td.style.padding = '1.5rem';
+          td.textContent = 'Belum ada data rekanan.';
+          tr.appendChild(td);
+          tbody.appendChild(tr);
+          stats.textContent = '0 rekanan';
+          return;
+        }
+
+        data
+          .sort((a, b) => Number(a.id) - Number(b.id))
+          .forEach((r) => {
+            const tr = document.createElement('tr');
+
+            const tdId = document.createElement('td');
+            tdId.textContent = r.id;
+
+            const tdNama = document.createElement('td');
+            tdNama.textContent = r.nama || '-';
+
+            const tdNpwp = document.createElement('td');
+            tdNpwp.textContent = r.npwp || '-';
+
+            const tdKodeUsaha = document.createElement('td');
+            tdKodeUsaha.textContent = r.kode_usaha || '-';
+
+            const tdStatus = document.createElement('td');
+            const badge = document.createElement('span');
+            const dot = document.createElement('span');
+            dot.className =
+              'status-dot ' + (r.status === 'aktif' ? 'dot-aktif' : 'dot-nonaktif');
+            badge.className =
+              'badge ' + (r.status === 'aktif' ? 'badge-aktif' : 'badge-nonaktif');
+            const text = document.createElement('span');
+            text.textContent = r.status || '-';
+            badge.appendChild(dot);
+            badge.appendChild(text);
+            tdStatus.appendChild(badge);
+
+            tr.appendChild(tdId);
+            tr.appendChild(tdNama);
+            tr.appendChild(tdNpwp);
+            tr.appendChild(tdKodeUsaha);
+            tr.appendChild(tdStatus);
+
+            tbody.appendChild(tr);
+          });
+
+        const aktifCount = data.filter((r) => r.status === 'aktif').length;
+        const nonaktifCount = data.filter((r) => r.status !== 'aktif').length;
+        stats.textContent = `${data.length} rekanan (aktif: ${aktifCount}, nonaktif: ${nonaktifCount})`;
+      }
+
+      function startSSE() {
+        const protocol = window.location.protocol === 'https:' ? 'https' : 'http';
+        const url = `${protocol}://${window.location.host}/events`;
+        const es = new EventSource(url);
+
+        es.onopen = () => {
+          setConnectionStatus(true);
+        };
+
+        es.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data || '[]');
+            renderTable(data);
+          } catch (e) {
+            console.error('Failed to parse SSE data', e);
+          }
+        };
+
+        es.onerror = () => {
+          setConnectionStatus(false);
+        };
+      }
+
+      startSSE();
+    </script>
+  </body>
+</html>
+
