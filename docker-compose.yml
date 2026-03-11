@@ -110,7 +110,7 @@ services:
       PMA_HOSTS: mysql-write,mysql-read
       PMA_ARBITRARY: 1
     ports:
-      - "8080:80"
+      - "8082:80"
     depends_on:
       - mysql-write
       - mysql-read
@@ -126,7 +126,7 @@ services:
       dockerfile: Dockerfile
     container_name: master-data-service
     ports:
-      - "8001:8001"
+      - "8002:8001"
     environment:
       KAFKA_BROKERS: kafka:9092
       NODE_ENV: production

@@ -55,12 +55,12 @@ export class RekananReadRepository {
       ? Number((countResult as { count: number }[])[0].count)
       : 0;
     const lastPage = Math.max(1, Math.ceil(total / perPage));
-    const offset = (page - 1) * perPage;
-
+    const limit = parseInt(String(perPage));
+    const offset = parseInt(String((page - 1) * perPage));
     const [rows] = await this.pool.execute(
       `SELECT id, nama, npwp, npwp_clean, kode_usaha, alamat, kota, telepon, email, kode_swift, status, nama_lower, created_at, updated_at
-       FROM rekanan WHERE ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
-      [...params, perPage, offset] as (string | number)[],
+       FROM rekanan WHERE ${where} ORDER BY updated_at DESC LIMIT ${limit} OFFSET ${offset}`,
+      params as (string | number)[],
     );
     const data = (Array.isArray(rows) ? rows : []) as RekananReadRow[];
 
