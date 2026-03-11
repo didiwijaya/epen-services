@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { DatabaseModule } from './database/database.module';
 import { KafkaModule } from './kafka/kafka.module';
 import { RekananModule } from './rekanan/rekanan.module';
 import { RekeningPenerimaModule } from './rekening-penerima/rekening-penerima.module';
@@ -11,6 +12,7 @@ import { DropdownModule } from './dropdown/dropdown.module';
 
 @Module({
   imports: [
+    DatabaseModule,
     KafkaModule,
     RekananModule,
     RekeningPenerimaModule,

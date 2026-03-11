@@ -31,6 +31,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - cqrs-net
 
   # ─────────────────────────────────────────────
   # KAFKA UI (monitoring)
@@ -47,6 +49,73 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    networks:
+      - cqrs-net
+
+  # ─────────────────────────────────────────────
+  # MYSQL CQRS: WRITE (sumber kebenaran)
+  # ─────────────────────────────────────────────
+  mysql-write:
+    image: mysql:8.0
+    container_name: mysql-write
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: product_write
+      MYSQL_USER: user
+      MYSQL_PASSWORD: userpassword
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-write-data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cqrs-net
+
+  # ─────────────────────────────────────────────
+  # MYSQL CQRS: READ (read model, di-sync via Kafka)
+  # ─────────────────────────────────────────────
+  mysql-read:
+    image: mysql:8.0
+    container_name: mysql-read
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: product_read
+      MYSQL_USER: user
+      MYSQL_PASSWORD: userpassword
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-read-data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cqrs-net
+
+  # ─────────────────────────────────────────────
+  # phpMyAdmin (akses kedua DB)
+  # ─────────────────────────────────────────────
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: phpmyadmin
+    environment:
+      PMA_HOSTS: mysql-write,mysql-read
+      PMA_ARBITRARY: 1
+    ports:
+      - "8080:80"
+    depends_on:
+      - mysql-write
+      - mysql-read
+    networks:
+      - cqrs-net
 
   # ─────────────────────────────────────────────
   # MASTER DATA SERVICE
@@ -61,10 +130,27 @@ services:
     environment:
       KAFKA_BROKERS: kafka:9092
       NODE_ENV: production
+      # CQRS MySQL
+      MYSQL_WRITE_HOST: mysql-write
+      MYSQL_WRITE_PORT: 3306
+      MYSQL_WRITE_USER: user
+      MYSQL_WRITE_PASSWORD: userpassword
+      MYSQL_WRITE_DATABASE: product_write
+      MYSQL_READ_HOST: mysql-read
+      MYSQL_READ_PORT: 3306
+      MYSQL_READ_USER: user
+      MYSQL_READ_PASSWORD: userpassword
+      MYSQL_READ_DATABASE: product_read
     depends_on:
       kafka:
         condition: service_healthy
+      mysql-write:
+        condition: service_healthy
+      mysql-read:
+        condition: service_healthy
     restart: unless-stopped
+    networks:
+      - cqrs-net
 
   # ─────────────────────────────────────────────
   # REKANAN REALTIME VIEWER (Kafka consumer + SSE)
@@ -75,15 +161,53 @@ services:
       dockerfile: Dockerfile
     container_name: rekanan-realtime
     environment:
-      KAFKA_BROKERS: kafka:9092
       PORT: 3000
+      KAFKA_BROKERS: kafka:9092
+      READ_TOPIC: rekanan.read-model
     depends_on:
       kafka:
         condition: service_healthy
     ports:
       - "3000:3000"
     restart: unless-stopped
+    networks:
+      - cqrs-net
+
+  # ─────────────────────────────────────────────
+  # REKANAN READ MODEL PRODUCER (DB read -> Kafka)
+  # ─────────────────────────────────────────────
+  rekanan-read-producer:
+    build:
+      context: ./rekanan-read-producer
+      dockerfile: Dockerfile
+    container_name: rekanan-read-producer
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      MYSQL_READ_HOST: mysql-read
+      MYSQL_READ_PORT: 3306
+      MYSQL_READ_USER: user
+      MYSQL_READ_PASSWORD: userpassword
+      MYSQL_READ_DATABASE: product_read
+      READ_TOPIC: rekanan.read-model
+      POLL_INTERVAL_MS: 2000
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mysql-read:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - cqrs-net
 
 volumes:
   kafka-data:
     driver: local
+  mysql-write-data:
+    driver: local
+  mysql-read-data:
+    driver: local
+
+
+networks:
+  cqrs-net:
+    driver: bridge

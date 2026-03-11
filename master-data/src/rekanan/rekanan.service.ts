@@ -3,57 +3,18 @@ import { CreateRekananDto } from './dto/create-rekanan.dto';
 import { UpdateRekananDto } from './dto/update-rekanan.dto';
 import { Rekanan } from './entities/rekanan.entity';
 import { KafkaProducerService } from '../kafka/kafka.producer.service';
+import { RekananWriteRepository } from './rekanan-write.repository';
+import { RekananReadRepository } from './rekanan-read.repository';
 
 @Injectable()
 export class RekananService {
-  private rekanan: Rekanan[] = [
-    {
-      id: 1,
-      nama: 'CV Maju Jaya Abadi',
-      npwp: '01.234.567.8-901.000',
-      kode_usaha: '6201',
-      alamat: 'Jl. Pemuda No. 10, Semarang',
-      kota: 'Semarang',
-      telepon: '024-3456789',
-      email: 'majujaya@example.com',
-      kode_swift: 'BNINIDJA',
-      status: 'aktif',
-      created_at: new Date('2024-01-01'),
-      updated_at: new Date('2024-01-01'),
-    },
-    {
-      id: 2,
-      nama: 'PT Karya Bersama',
-      npwp: '02.345.678.9-012.000',
-      kode_usaha: '4210',
-      alamat: 'Jl. Ahmad Yani No. 55, Semarang',
-      kota: 'Semarang',
-      telepon: '024-7654321',
-      email: 'karyabersama@example.com',
-      kode_swift: 'CENAIDJA',
-      status: 'aktif',
-      created_at: new Date('2024-01-15'),
-      updated_at: new Date('2024-01-15'),
-    },
-    {
-      id: 3,
-      nama: 'UD Sejahtera Mandiri',
-      npwp: '03.456.789.0-123.000',
-      kode_usaha: '4610',
-      alamat: 'Jl. Pandanaran No. 77, Semarang',
-      kota: 'Semarang',
-      telepon: '024-9876543',
-      email: 'sejahteramandiri@example.com',
-      kode_swift: null,
-      status: 'nonaktif',
-      created_at: new Date('2023-06-01'),
-      updated_at: new Date('2024-01-20'),
-    },
-  ];
-  private nextId = 4;
+  constructor(
+    private readonly writeRepo: RekananWriteRepository,
+    private readonly readRepo: RekananReadRepository,
+    private readonly kafkaProducer: KafkaProducerService,
+  ) {}
 
-  constructor(private readonly kafkaProducer: KafkaProducerService) {}
-
+  // ─── QUERIES (baca dari read DB) ─────────────────────────────────────────
   findAll(
     page = 1,
     perPage = 15,
@@ -61,50 +22,20 @@ export class RekananService {
     status?: string,
     kodeUsaha?: string,
   ) {
-    let filtered = [...this.rekanan];
-
-    if (search) {
-      const s = search.toLowerCase();
-      filtered = filtered.filter(
-        (r) =>
-          r.nama.toLowerCase().includes(s) || r.npwp.toLowerCase().includes(s),
-      );
-    }
-    if (status) {
-      filtered = filtered.filter((r) => r.status === status);
-    }
-    if (kodeUsaha) {
-      filtered = filtered.filter((r) => r.kode_usaha === kodeUsaha);
-    }
-
-    const total = filtered.length;
-    const lastPage = Math.ceil(total / perPage);
-    const data = filtered.slice((page - 1) * perPage, page * perPage);
-
-    return { data, meta: { current_page: page, per_page: perPage, total, last_page: lastPage } };
+    return this.readRepo.findAll(+page, +perPage, search, status, kodeUsaha);
   }
 
   lookup(npwp?: string, nama?: string, kodeSwift?: string) {
-    let filtered = [...this.rekanan].filter((r) => r.status === 'aktif');
-
-    if (npwp) filtered = filtered.filter((r) => r.npwp.includes(npwp));
-    if (nama) filtered = filtered.filter((r) => r.nama.toLowerCase().includes(nama.toLowerCase()));
-    if (kodeSwift) filtered = filtered.filter((r) => r.kode_swift === kodeSwift);
-
-    return filtered;
+    return this.readRepo.lookup(npwp, nama, kodeSwift);
   }
 
-  findOne(id: number): Rekanan {
-    const rekanan = this.rekanan.find((r) => r.id === id);
-    if (!rekanan) {
-      throw new NotFoundException(`Rekanan dengan id ${id} tidak ditemukan`);
-    }
-    return rekanan;
+  findOne(id: number): Promise<Rekanan> {
+    return this.readRepo.findOne(id).then((row) => this.readRowToEntity(row));
   }
 
+  // ─── COMMANDS (tulis ke write DB, emit Kafka, sync ke read DB) ──────────
   async create(dto: CreateRekananDto): Promise<Rekanan> {
-    const rekanan: Rekanan = {
-      id: this.nextId++,
+    const row = await this.writeRepo.insert({
       nama: dto.nama,
       npwp: dto.npwp,
       kode_usaha: dto.kode_usaha ?? null,
@@ -113,68 +44,139 @@ export class RekananService {
       telepon: dto.telepon ?? null,
       email: dto.email ?? null,
       kode_swift: dto.kode_swift ?? null,
-      status: 'aktif',
-      created_at: new Date(),
-      updated_at: new Date(),
-    };
-    this.rekanan.push(rekanan);
+    });
 
-    await this.kafkaProducer.sendEvent(
-      'master-data.rekanan',
-      String(rekanan.id),
-      {
-        eventType: 'rekanan.created',
-        version: 1,
-        rekananId: rekanan.id,
-        nama: rekanan.nama,
-        npwp: rekanan.npwp,
-        kode_usaha: rekanan.kode_usaha,
-        status: rekanan.status,
-        timestamp: new Date().toISOString(),
-      },
-    );
+    await this.syncReadModelFromWriteRow(row);
+    await this.emitEvent('rekanan.created', row);
 
-    return rekanan;
+    return this.writeRowToEntity(row);
   }
 
   async update(id: number, dto: UpdateRekananDto): Promise<Rekanan> {
-    const rekanan = this.findOne(id);
-    Object.assign(rekanan, { ...dto, updated_at: new Date() });
+    const row = await this.writeRepo.update(id, dto as Record<string, unknown>);
 
-    await this.kafkaProducer.sendEvent(
-      'master-data.rekanan',
-      String(rekanan.id),
-      {
-        eventType: 'rekanan.updated',
-        version: 1,
-        rekananId: rekanan.id,
-        nama: rekanan.nama,
-        npwp: rekanan.npwp,
-        status: rekanan.status,
-        updatedFields: Object.keys(dto),
-        timestamp: new Date().toISOString(),
-      },
-    );
+    await this.syncReadModelFromWriteRow(row);
+    await this.emitEvent('rekanan.updated', row);
 
-    return rekanan;
+    return this.writeRowToEntity(row);
   }
 
   async softDelete(id: number): Promise<void> {
-    const rekanan = this.findOne(id);
-    rekanan.status = 'nonaktif';
-    rekanan.updated_at = new Date();
+    const row = await this.writeRepo.findOneById(id);
+    if (!row) throw new NotFoundException(`Rekanan dengan id ${id} tidak ditemukan`);
 
+    await this.writeRepo.softDelete(id);
+    await this.readRepo.setStatus(id, 'nonaktif');
+    await this.emitEvent('rekanan.deactivated', row);
+  }
+
+  private async syncReadModelFromWriteRow(row: {
+    id: number;
+    nama: string;
+    npwp: string;
+    kode_usaha: string | null;
+    alamat: string;
+    kota: string | null;
+    telepon: string | null;
+    email: string | null;
+    kode_swift: string | null;
+    status: string;
+    created_at: Date;
+    updated_at: Date;
+  }): Promise<void> {
+    await this.readRepo.upsertFromEvent({
+      id: row.id,
+      nama: row.nama,
+      npwp: row.npwp,
+      kode_usaha: row.kode_usaha,
+      alamat: row.alamat,
+      kota: row.kota,
+      telepon: row.telepon,
+      email: row.email,
+      kode_swift: row.kode_swift,
+      status: row.status,
+      created_at: row.created_at.toISOString(),
+      updated_at: row.updated_at.toISOString(),
+    });
+  }
+
+  private async emitEvent(
+    eventType: string,
+    row: { id: number; nama: string; npwp: string; kode_usaha: string | null; status: string },
+  ): Promise<void> {
     await this.kafkaProducer.sendEvent(
       'master-data.rekanan',
-      String(rekanan.id),
+      String(row.id),
       {
-        eventType: 'rekanan.deactivated',
+        eventType,
         version: 1,
-        rekananId: rekanan.id,
-        nama: rekanan.nama,
-        npwp: rekanan.npwp,
+        rekananId: row.id,
+        nama: row.nama,
+        npwp: row.npwp,
+        kode_usaha: row.kode_usaha,
+        status: row.status,
         timestamp: new Date().toISOString(),
       },
     );
+  }
+
+  private writeRowToEntity(row: {
+    id: number;
+    nama: string;
+    npwp: string;
+    kode_usaha: string | null;
+    alamat: string;
+    kota: string | null;
+    telepon: string | null;
+    email: string | null;
+    kode_swift: string | null;
+    status: string;
+    created_at: Date;
+    updated_at: Date;
+  }): Rekanan {
+    return {
+      id: row.id,
+      nama: row.nama,
+      npwp: row.npwp,
+      kode_usaha: row.kode_usaha,
+      alamat: row.alamat,
+      kota: row.kota,
+      telepon: row.telepon,
+      email: row.email,
+      kode_swift: row.kode_swift,
+      status: row.status as 'aktif' | 'nonaktif',
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  private readRowToEntity(row: {
+    id: number;
+    nama: string;
+    npwp: string;
+    kode_usaha: string | null;
+    alamat: string;
+    kota: string | null;
+    telepon: string | null;
+    email: string | null;
+    kode_swift: string | null;
+    status: string;
+    created_at: Date | null;
+    updated_at: Date;
+  }): Rekanan {
+    return {
+      id: row.id,
+      nama: row.nama,
+      npwp: row.npwp,
+      kode_usaha: row.kode_usaha,
+      alamat: row.alamat,
+      kota: row.kota,
+      telepon: row.telepon,
+      email: row.email,
+      kode_swift: row.kode_swift,
+      status: row.status as 'aktif' | 'nonaktif',
+      created_at: row.created_at ?? row.updated_at,
+      updated_at: row.updated_at,
+    };
   }
 }

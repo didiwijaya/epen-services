@@ -5,7 +5,7 @@ const { Kafka } = require('kafkajs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Konfigurasi Kafka – sama pola dengan master-data
+// Konfigurasi Kafka – konsumsi read-model events
 const kafkaBrokers = (process.env.KAFKA_BROKERS || 'localhost:9094').split(',');
 const kafka = new Kafka({
   clientId: 'rekanan-realtime-viewer',
@@ -14,7 +14,7 @@ const kafka = new Kafka({
 
 const consumer = kafka.consumer({ groupId: 'rekanan-realtime-viewer-group' });
 
-// State rekanan sederhana di memory
+// State rekanan di memory, merefleksikan DB read
 /** @type {Record<string, any>} */
 const rekananStore = {};
 
@@ -34,7 +34,7 @@ app.get('/events', (req, res) => {
   });
   res.flushHeaders();
 
-  // Kirim snapshot awal
+  // Kirim snapshot awal dari state in-memory (cerminan DB read)
   res.write(`data: ${JSON.stringify(Object.values(rekananStore))}\n\n`);
 
   sseClients.add(res);
@@ -52,10 +52,10 @@ function broadcastRekanan() {
 
 async function startKafkaConsumer() {
   await consumer.connect();
-  console.log('[Kafka] Consumer connected (rekanan-realtime)');
+  console.log('[Kafka] Consumer connected (rekanan-realtime, read-model)');
 
   await consumer.subscribe({
-    topics: ['master-data.rekanan'],
+    topics: [process.env.READ_TOPIC || 'rekanan.read-model'],
     fromBeginning: true,
   });
 
@@ -78,29 +78,19 @@ async function startKafkaConsumer() {
       console.log(`[Kafka] EventType: ${eventType}`);
       console.log('[Kafka] Payload:', payload);
 
-      const id = String(payload.rekananId);
-
-      switch (eventType) {
-        case 'rekanan.created':
-        case 'rekanan.updated':
-          rekananStore[id] = {
-            id: payload.rekananId,
-            nama: payload.nama,
-            npwp: payload.npwp,
-            kode_usaha: payload.kode_usaha,
-            status: payload.status,
-          };
-          break;
-        case 'rekanan.deactivated':
-          if (rekananStore[id]) {
-            rekananStore[id].status = 'nonaktif';
-          }
-          break;
-        default:
-          console.log('[Kafka] Unknown event type, ignored');
+      if (eventType === 'rekanan.read.changed') {
+        const id = String(payload.id);
+        rekananStore[id] = {
+          id: payload.id,
+          nama: payload.nama,
+          npwp: payload.npwp,
+          kode_usaha: payload.kode_usaha,
+          status: payload.status,
+        };
+        broadcastRekanan();
+      } else {
+        console.log('[Kafka] Unknown read-model event type, ignored');
       }
-
-      broadcastRekanan();
     },
   });
 }

@@ -1,18 +1,15 @@
 {
-  "name": "rekanan-realtime",
+  "name": "rekanan-read-producer",
   "version": "1.0.0",
-  "description": "Realtime HTML table untuk rekanan berbasis Kafka + SSE",
+  "description": "Producer Kafka dari read model rekanan (product_read)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "dependencies": {
-    "cors": "^2.8.6",
-    "express": "^5.2.1",
     "kafkajs": "^2.2.4",
     "mysql2": "^3.11.0"
   }
 }
+
