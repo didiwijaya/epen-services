@@ -11,6 +11,7 @@ const dbConfig = {
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  connectTimeout: 10_000,
 };
 
 // Konfigurasi Kafka
@@ -27,6 +28,65 @@ let pool = null;
 
 // Simpan timestamp terakhir yang sudah dikirim
 let lastSeenUpdatedAt = null;
+
+// ── Simple Circuit Breaker untuk Kafka send ───────────────────────────────
+const CB_FAILURE_THRESHOLD = 5;
+const CB_COOLDOWN_MS = 30_000;
+
+let cbFailureCount = 0;
+let cbState = 'CLOSED'; // CLOSED | OPEN | HALF_OPEN
+let cbOpenedAt = null;
+
+function cbRecordSuccess() {
+  if (cbState !== 'CLOSED') {
+    console.log('[CircuitBreaker] Kafka CB → CLOSED (pemulihan berhasil)');
+  }
+  cbState = 'CLOSED';
+  cbFailureCount = 0;
+  cbOpenedAt = null;
+}
+
+function cbRecordFailure() {
+  cbFailureCount++;
+  if (cbFailureCount >= CB_FAILURE_THRESHOLD && cbState === 'CLOSED') {
+    cbState = 'OPEN';
+    cbOpenedAt = Date.now();
+    console.error(
+      `[CircuitBreaker] Kafka CB → OPEN (${cbFailureCount} kegagalan berturut). Fail fast aktif ${CB_COOLDOWN_MS / 1000}s.`,
+    );
+  }
+}
+
+function cbIsAllowed() {
+  if (cbState === 'CLOSED') return true;
+  if (cbState === 'OPEN') {
+    if (Date.now() - cbOpenedAt >= CB_COOLDOWN_MS) {
+      cbState = 'HALF_OPEN';
+      cbFailureCount = 0;
+      console.warn('[CircuitBreaker] Kafka CB → HALF-OPEN (mencoba pemulihan)');
+      return true; // izinkan 1 trial call
+    }
+    return false; // masih dalam cooldown
+  }
+  if (cbState === 'HALF_OPEN') return true;
+  return false;
+}
+
+// ── Retry helper dengan exponential backoff ───────────────────────────────
+async function withRetry(fn, label, maxAttempts = 3, baseDelayMs = 500) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxAttempts) throw err;
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      console.warn(`[Retry] ${label} — attempt ${attempt}/${maxAttempts} gagal, retry dalam ${delay}ms: ${err.message}`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 
 async function initDb() {
   pool = await mysql.createPool(dbConfig);
@@ -57,7 +117,7 @@ async function fetchChangedRekanan() {
   return Array.isArray(rows) ? rows : [];
 }
 
-async function toEvent(row) {
+function toEvent(row) {
   return {
     eventType: 'rekanan.read.changed',
     version: 1,
@@ -76,32 +136,53 @@ async function toEvent(row) {
 }
 
 async function pollAndPublish() {
+  // 1. Fetch dari DB dengan retry
+  let rows;
   try {
-    const rows = await fetchChangedRekanan();
-    if (rows.length === 0) {
-      return;
-    }
-
-    const messages = [];
-    for (const row of rows) {
-      const event = await toEvent(row);
-      messages.push({
-        key: String(row.id),
-        value: JSON.stringify(event),
-      });
-      lastSeenUpdatedAt = row.updated_at;
-    }
-
-    await producer.send({
-      topic: process.env.READ_TOPIC || 'rekanan.read-model',
-      messages,
-    });
-
-    console.log(
-      `[ReadProducer] Sent ${messages.length} rekanan.read-model events. lastSeenUpdatedAt=${lastSeenUpdatedAt}`,
+    rows = await withRetry(
+      () => fetchChangedRekanan(),
+      'fetchChangedRekanan',
+      3,
+      500,
     );
   } catch (err) {
-    console.error('[ReadProducer] pollAndPublish error', err);
+    console.error('[ReadProducer] DB query gagal setelah 3x retry:', err.message);
+    return;
+  }
+
+  if (rows.length === 0) return;
+
+  // 2. Kirim ke Kafka dengan circuit breaker + retry
+  if (!cbIsAllowed()) {
+    console.warn('[ReadProducer] Circuit OPEN — skip Kafka send, menunggu cooldown...');
+    return;
+  }
+
+  const messages = rows.map((row) => ({
+    key: String(row.id),
+    value: JSON.stringify(toEvent(row)),
+  }));
+
+  try {
+    await withRetry(
+      () =>
+        producer.send({
+          topic: process.env.READ_TOPIC || 'rekanan.read-model',
+          messages,
+        }),
+      'kafkaSend',
+      3,
+      500,
+    );
+
+    cbRecordSuccess();
+    lastSeenUpdatedAt = rows[rows.length - 1].updated_at;
+    console.log(
+      `[ReadProducer] Sent ${messages.length} rekanan.read-model events. lastSeen=${lastSeenUpdatedAt}`,
+    );
+  } catch (err) {
+    cbRecordFailure();
+    console.error('[ReadProducer] Kafka send gagal setelah 3x retry:', err.message);
   }
 }
 
@@ -111,7 +192,7 @@ async function bootstrap() {
 
   const intervalMs = Number(process.env.POLL_INTERVAL_MS || '2000');
   console.log(
-    `[ReadProducer] Started. Poll interval: ${intervalMs} ms, topic: ${
+    `[ReadProducer] Started. Poll interval: ${intervalMs}ms, topic: ${
       process.env.READ_TOPIC || 'rekanan.read-model'
     }`,
   );
@@ -123,4 +204,3 @@ bootstrap().catch((err) => {
   console.error('[ReadProducer] Fatal error on bootstrap', err);
   process.exit(1);
 });
-

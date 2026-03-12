@@ -8,6 +8,7 @@ export const databaseConfig = {
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
+    connectTimeout: 10_000, // 10 detik timeout koneksi
   },
   read: {
     host: process.env.MYSQL_READ_HOST || 'localhost',
@@ -18,5 +19,6 @@ export const databaseConfig = {
     waitForConnections: true,
     connectionLimit: 20,
     queueLimit: 0,
+    connectTimeout: 10_000, // 10 detik timeout koneksi
   },
 };
